@@ -3,10 +3,17 @@
         "target_name": "virtual_display",
         "sources": [],
         "conditions": [
-            ['OS=="win32"', {
+            ['OS=="win"', {
                 "sources": [
                     "src/virtual_display.cc"
                 ],
+                 "defines": [
+                    "_HAS_EXCEPTIONS=1"
+                ],
+                "msvs_settings": {
+                    "VCCLCompilerTool": {
+                    "ExceptionHandling": 1
+                }},
             }]
         ],
         'include_dirs': [

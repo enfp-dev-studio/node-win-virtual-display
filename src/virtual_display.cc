@@ -1,125 +1,108 @@
-#include <Windows.h>
+#include "virtual_display.h"
 #include <napi.h>
 
-class VirtualDisplay : public Napi::ObjectWrap<VirtualDisplay> {
-public:
-  static Napi::Object Init(Napi::Env env, Napi::Object exports);
-  VirtualDisplay(const Napi::CallbackInfo &info);
+#include <windows.h>
+#include <dxgi1_6.h>
 
+#pragma comment(lib, "dxgi.lib")
+
+class VDisplay : public Napi::ObjectWrap<VDisplay> {
+public:
+  static Napi::Function GetClass(Napi::Env);
+  VDisplay(const Napi::CallbackInfo &info);
   Napi::Value CreateVirtualDisplay(const Napi::CallbackInfo &info);
-  Napi::Value CloneVirtualDisplay(const Napi::CallbackInfo &info);
   Napi::Value DestroyVirtualDisplay(const Napi::CallbackInfo &info);
 
 private:
-  DEVMODE _devMode;
-  DISPLAY_DEVICE _displayDevice;
-  DWORD _displayId;
+  IDXGIOutputDuplication *_duplication;
 };
 
-Napi::Object VirtualDisplay::Init(Napi::Env env, Napi::Object exports) {
-  Napi::Function func =
-      DefineClass(env, "VirtualDisplay",
-                  {
-                      InstanceMethod("createVirtualDisplay",
-                                     &VirtualDisplay::CreateVirtualDisplay),
-                      InstanceMethod("cloneVirtualDisplay",
-                                     &VirtualDisplay::CloneVirtualDisplay),
-                      InstanceMethod("destroyVirtualDisplay",
-                                     &VirtualDisplay::DestroyVirtualDisplay),
-                  });
+VDisplay::VDisplay(const Napi::CallbackInfo &info) : ObjectWrap(info), _duplication(nullptr) {
+}
 
-  Napi::FunctionReference *constructor = new Napi::FunctionReference();
-  *constructor = Napi::Persistent(func);
-  exports.Set("VirtualDisplay", func);
-  env.SetInstanceData(constructor);
+Napi::Function VDisplay::GetClass(Napi::Env env) {
+  return DefineClass(
+      env, "VDisplay",
+      {
+          VDisplay::InstanceMethod("createVirtualDisplay",
+                                   &VDisplay::CreateVirtualDisplay),
+          VDisplay::InstanceMethod("destroyVirtualDisplay",
+                                   &VDisplay::DestroyVirtualDisplay),
+      });
+}
 
+Napi::Object Init(Napi::Env env, Napi::Object exports) {
+  Napi::String name = Napi::String::New(env, "VDisplay");
+  exports.Set(name, VDisplay::GetClass(env));
   return exports;
 }
 
-VirtualDisplay::VirtualDisplay(const Napi::CallbackInfo &info)
-    : Napi::ObjectWrap<VirtualDisplay>(info) {
-  // Initialize display properties
-  ZeroMemory(&_devMode, sizeof(_devMode));
-  _devMode.dmSize = sizeof(_devMode);
-  ZeroMemory(&_displayDevice, sizeof(_displayDevice));
-  _displayDevice.cb = sizeof(_displayDevice);
-  _displayId = 0;
-}
-
-Napi::Value
-VirtualDisplay::CreateVirtualDisplay(const Napi::CallbackInfo &info) {
+Napi::Value VDisplay::CreateVirtualDisplay(const Napi::CallbackInfo &info) {
   Napi::Env env = info.Env();
 
-  // Set DEVMODE properties for the virtual display
-  _devMode.dmPelsWidth = 1280;
-  _devMode.dmPelsHeight = 720;
-  _devMode.dmBitsPerPel = 32;
-  _devMode.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL;
-
-  // Create virtual display
-  LONG result = ChangeDisplaySettingsEx(NULL, &_devMode, NULL,
-                                        CDS_UPDATEREGISTRY | CDS_NORESET, NULL);
-
-  if (result != DISP_CHANGE_SUCCESSFUL) {
-    Napi::Error::New(env, "Failed to create virtual display")
-        .ThrowAsJavaScriptException();
-    return env.Null();
+  if (_duplication) {
+    return Napi::Boolean::New(env, false);
   }
 
-  // Save display ID
-  _displayId = 1;
+  IDXGIFactory1 *factory = nullptr;
+  IDXGIAdapter *adapter = nullptr;
+  IDXGIOutput *output = nullptr;
 
-  return Napi::Number::New(env, _displayId);
+  HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void **)&factory);
+  if (FAILED(hr)) {
+    return Napi::Boolean::New(env, false);
+  }
+
+  hr = factory->EnumAdapters(0, &adapter);
+  if (FAILED(hr)) {
+    factory->Release();
+    return Napi::Boolean::New(env, false);
+  }
+
+  hr = adapter->EnumOutputs(0, &output);
+  if (FAILED(hr)) {
+    adapter->Release();
+    factory->Release();
+    return Napi::Boolean::New(env, false);
+  }
+
+  DXGI_OUTPUT_DESC desc;
+  output->GetDesc(&desc);
+
+  IDXGIOutput1 *output1 = nullptr;
+  hr = output->QueryInterface(__uuidof(IDXGIOutput1), (void **)&output1);
+  if (FAILED(hr)) {
+    output->Release();
+    adapter->Release();
+    factory->Release();
+    return Napi::Boolean::New(env, false);
+  }
+
+  hr = output1->DuplicateOutput(adapter, &_duplication);
+  if (FAILED(hr)) {
+    output1->Release();
+    output->Release();
+    adapter->Release();
+    factory->Release();
+    return Napi::Boolean::New(env, false);
+  }
+
+  output1->Release();
+  output->Release();
+  adapter->Release();
+  factory->Release();
+
+  return Napi::Boolean::New(env, true);
 }
 
-Napi::Value
-VirtualDisplay::CloneVirtualDisplay(const Napi::CallbackInfo &info) {
-  Napi::Env env = info.Env();
-
-  // Find the primary display device
-  for (int i = 0; EnumDisplayDevices(NULL, i, &_displayDevice, 0); i++) {
-    if (_displayDevice.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) {
-      break;
-    }
+Napi::Value VDisplay::DestroyVirtualDisplay(const Napi::CallbackInfo &info) {
+  if (_duplication) {
+    _duplication->Release();
+    _duplication = nullptr;
+    return Napi::Boolean::New(info.Env(), true);
+  } else {
+    return Napi::Boolean::New(info.Env(), false);
   }
-
-  // Get the primary display device settings
-  EnumDisplaySettings(_displayDevice.DeviceName, ENUM_CURRENT_SETTINGS,
-                      &_devMode);
-
-  // Clone the virtual display
-  LONG result = ChangeDisplaySettingsEx(NULL, &_devMode, NULL,
-                                        CDS_UPDATEREGISTRY | CDS_NORESET, NULL);
-
-  if (result != DISP_CHANGE_SUCCESSFUL) {
-    Napi::Error::New(env, "Failed to clone virtual display")
-        .ThrowAsJavaScriptException();
-    return env.Null();
-  }
-
-  // Save display ID
-  _displayId = 1;
-
-  return Napi::Number::New(env, _displayId);
-}
-
-Napi::Value
-VirtualDisplay::DestroyVirtualDisplay(const Napi::CallbackInfo &info) {
-  Napi::Env env = info.Env();
-
-  // Destroy the virtual display
-  LONG result = ChangeDisplaySettingsEx(NULL, NULL, NULL, 0, NULL);
-
-  if (result != DISP_CHANGE_SUCCESSFUL) {
-    Napi::Error::New(env, "Failed to destroy virtual display")
-        .ThrowAsJavaScriptException();
-    return env.Null();
-  }
-
-  // Reset display ID
-  _displayId = 0;
-
-  return Napi::Number::New(env, _displayId);
 }
 
 Napi::Object InitAll(Napi::Env env, Napi::Object exports) {

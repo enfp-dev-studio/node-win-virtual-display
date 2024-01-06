@@ -1,112 +1,127 @@
-#include "virtual_display.h"
 #include <napi.h>
+#include <vector>
+#include <thread>
+#include "parsec-vdd.h"
 
-#include <windows.h>
-#include <dxgi1_6.h>
+using namespace parsec_vdd;
 
-#pragma comment(lib, "dxgi.lib")
+class VirtualDisplay : public Napi::ObjectWrap<VirtualDisplay>
+{
+    void StartUpdater()
+    {
+        if (!running)
+        {
+            running = true;
+            updater = std::thread([this]
+                                  {
+                while (running) {
+                    VddUpdate(vdd);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                } });
+        }
+    }
 
-class VDisplay : public Napi::ObjectWrap<VDisplay> {
+    void StopUpdater()
+    {
+        if (running)
+        {
+            running = false;
+            if (updater.joinable())
+            {
+                updater.join();
+            }
+        }
+    }
+    std::vector<int> displays;
+    std::thread updater;
+    std::atomic<bool> running;
+    HANDLE vdd;
+
 public:
-  static Napi::Function GetClass(Napi::Env);
-  VDisplay(const Napi::CallbackInfo &info);
-  Napi::Value CreateVirtualDisplay(const Napi::CallbackInfo &info);
-  Napi::Value DestroyVirtualDisplay(const Napi::CallbackInfo &info);
+    static Napi::Object Init(Napi::Env env, Napi::Object exports);
+    VirtualDisplay(const Napi::CallbackInfo &info);
 
 private:
-  IDXGIOutputDuplication *_duplication;
+    static Napi::FunctionReference constructor;
+    Napi::Value CreateVirtualDisplay(const Napi::CallbackInfo &info);
+    Napi::Value DestroyVirtualDisplay(const Napi::CallbackInfo &info);
 };
 
-VDisplay::VDisplay(const Napi::CallbackInfo &info) : ObjectWrap(info), _duplication(nullptr) {
+Napi::FunctionReference VirtualDisplay::constructor;
+
+Napi::Object VirtualDisplay::Init(Napi::Env env, Napi::Object exports)
+{
+    Napi::Function func = DefineClass(env, "VirtualDisplay", {
+                                                                 InstanceMethod("createVirtualDisplay", &VirtualDisplay::CreateVirtualDisplay),
+                                                                 InstanceMethod("destroyVirtualDisplay", &VirtualDisplay::DestroyVirtualDisplay),
+                                                             });
+    constructor = Napi::Persistent(func);
+    constructor.SuppressDestruct();
+
+    exports.Set("VirtualDisplay", func);
+    return exports;
 }
 
-Napi::Function VDisplay::GetClass(Napi::Env env) {
-  return DefineClass(
-      env, "VDisplay",
-      {
-          VDisplay::InstanceMethod("createVirtualDisplay",
-                                   &VDisplay::CreateVirtualDisplay),
-          VDisplay::InstanceMethod("destroyVirtualDisplay",
-                                   &VDisplay::DestroyVirtualDisplay),
-      });
+VirtualDisplay::VirtualDisplay(const Napi::CallbackInfo &info) : Napi::ObjectWrap<VirtualDisplay>(info)
+{
+    // Constructor logic goes here
 }
 
-Napi::Object Init(Napi::Env env, Napi::Object exports) {
-  Napi::String name = Napi::String::New(env, "VDisplay");
-  exports.Set(name, VDisplay::GetClass(env));
-  return exports;
+Napi::Value VirtualDisplay::CreateVirtualDisplay(const Napi::CallbackInfo &info)
+{
+    this->vdd = OpenDeviceHandle(&VDD_ADAPTER_GUID);
+
+    Napi::Env env = info.Env();
+
+    if (displays.size() == 0 && displays.size() < VDD_MAX_DISPLAYS)
+    {
+        int index = VddAddDisplay(vdd);
+        StartUpdater();
+        displays.push_back(index);
+
+
+        return Napi::Number::New(env, index);
+    }
+    else
+    {
+        return env.Null(); // 또는 오류 메시지 반환
+    }
+    // Logic to create virtual display goes here
 }
 
-Napi::Value VDisplay::CreateVirtualDisplay(const Napi::CallbackInfo &info) {
-  Napi::Env env = info.Env();
+Napi::Value VirtualDisplay::DestroyVirtualDisplay(const Napi::CallbackInfo &info)
+{
+    Napi::Env env = info.Env();
+    //
+    Napi::HandleScope scope(env);
 
-  if (_duplication) {
-    return Napi::Boolean::New(env, false);
-  }
+    // 'console' 객체를 가져옵니다.
+    Napi::Object global = env.Global();
+    Napi::Object console = global.Get("console").As<Napi::Object>();
 
-  IDXGIFactory1 *factory = nullptr;
-  IDXGIAdapter *adapter = nullptr;
-  IDXGIOutput *output = nullptr;
+    // 'log' 함수를 가져옵니다.
+    Napi::Function log = console.Get("log").As<Napi::Function>();
 
-  HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void **)&factory);
-  if (FAILED(hr)) {
-    return Napi::Boolean::New(env, false);
-  }
-
-  hr = factory->EnumAdapters(0, &adapter);
-  if (FAILED(hr)) {
-    factory->Release();
-    return Napi::Boolean::New(env, false);
-  }
-
-  hr = adapter->EnumOutputs(0, &output);
-  if (FAILED(hr)) {
-    adapter->Release();
-    factory->Release();
-    return Napi::Boolean::New(env, false);
-  }
-
-  DXGI_OUTPUT_DESC desc;
-  output->GetDesc(&desc);
-
-  IDXGIOutput1 *output1 = nullptr;
-  hr = output->QueryInterface(__uuidof(IDXGIOutput1), (void **)&output1);
-  if (FAILED(hr)) {
-    output->Release();
-    adapter->Release();
-    factory->Release();
-    return Napi::Boolean::New(env, false);
-  }
-
-  hr = output1->DuplicateOutput(adapter, &_duplication);
-  if (FAILED(hr)) {
-    output1->Release();
-    output->Release();
-    adapter->Release();
-    factory->Release();
-    return Napi::Boolean::New(env, false);
-  }
-
-  output1->Release();
-  output->Release();
-  adapter->Release();
-  factory->Release();
-
-  return Napi::Boolean::New(env, true);
+    log.Call(console, {Napi::String::New(env, "DestroyVirtualDisplay")});
+    //
+    if (!displays.empty())
+    {
+        int index = displays.back();
+        StopUpdater();
+        VddRemoveDisplay(vdd, index);
+        displays.pop_back();
+        return Napi::Number::New(env, index);
+    }
+    else
+    {
+        return env.Null(); // 또는 오류 메시지 반환
+    }
+    // Logic to destroy virtual display goes here
 }
 
-Napi::Value VDisplay::DestroyVirtualDisplay(const Napi::CallbackInfo &info) {
-  if (_duplication) {
-    _duplication->Release();
-    _duplication = nullptr;
-    return Napi::Boolean::New(info.Env(), true);
-  } else {
-    return Napi::Boolean::New(info.Env(), false);
-  }
+Napi::Object InitAll(Napi::Env env, Napi::Object exports)
+{
+    return VirtualDisplay::Init(env, exports);
 }
 
-Napi::Object InitAll(Napi::Env env, Napi::Object exports) {
-  return VirtualDisplay::Init(env, exports);
-}
-
-NODE_API_MODULE(addon, InitAll)
+NODE_API_MODULE(NODE_GYP_MODULE_NAME, InitAll)

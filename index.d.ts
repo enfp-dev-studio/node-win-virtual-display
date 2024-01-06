@@ -7,21 +7,6 @@ export type DisplayInfo = {
   height: number;
 };
 
-export function getDisplayId(): number;
-export function createVirtualDisplay({
-  width,
-  height,
-  frameRate,
-  hiDPI,
-  displayName: string,
-}: {
-  width: number;
-  height: number;
-  frameRate: number;
-  hiDPI: boolean;
-  displayName: string;
-}): DisplayInfo;
-export function cloneVirtualDisplay({
-  displayName: string,
-}): DisplayInfo;
+// export function createVirtualDisplay(): DisplayInfo;
+export function createVirtualDisplay(): void;
 export function destroyVirtualDisplay(): boolean;

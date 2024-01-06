@@ -2,43 +2,27 @@
 const addon = require("bindings")("virtual_display.node");
 
 function VirtualDisplay() {
-  this.createVirtualDisplay = function ({
-    width,
-    height,
-    frameRate,
-    hiDPI,
-    displayName
-  }) {
-    const ret = _addonInstance.createVirtualDisplay(
-      width,
-      height,
-      frameRate,
-      hiDPI,
-      displayName
-    );
-    return {
-      id: ret.id,
-      width: ret.width,
-      height: ret.height,
-    };
+  var _addonInstance = new addon.VirtualDisplay();
+
+  this.createVirtualDisplay = function () {
+    // 네이티브 메서드 호출
+    const ret = _addonInstance.createVirtualDisplay();
+
+    // 결과 로깅
+    console.log(ret);
+
+    // 반환 객체 구성
+    // return {
+    //   id: ret.id,
+    //   width: ret.width,
+    //   height: ret.height,
+    // };
   };
 
   this.destroyVirtualDisplay = function () {
+    // 네이티브 메서드 호출
     return _addonInstance.destroyVirtualDisplay();
   };
-
-  this.cloneVirtualDisplay = function ({
-    displayName
-  }) {
-    const ret = _addonInstance.cloneVirtualDisplay(displayName);
-    return {
-      id: ret.id,
-      width: ret.width,
-      height: ret.height,
-    };
-  };
-
-  var _addonInstance = new addon.VDisplay();
 }
 
 module.exports = VirtualDisplay;
